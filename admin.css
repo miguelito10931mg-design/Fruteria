@@ -1,0 +1,48 @@
+/* ============ DASHBOARD ============ */
+.kpi-grid {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin-bottom: var(--space-5);
+}
+.kpi {
+  background: var(--color-surface); border-radius: var(--radius-md);
+  padding: var(--space-4); box-shadow: var(--shadow-sm);
+}
+.kpi__label { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--color-text-muted); margin-bottom: 4px; }
+.kpi__value { font-size: var(--fs-2xl); font-weight: 800; color: var(--color-primary); }
+
+.table-wrap { overflow-x: auto; border-radius: var(--radius-md); box-shadow: var(--shadow-sm); }
+.data-table {
+  width: 100%; border-collapse: collapse; background: var(--color-surface);
+  font-size: var(--fs-sm);
+}
+.data-table th, .data-table td { padding: var(--space-3); text-align: left; border-bottom: 1px solid var(--color-border); }
+.data-table th { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .05em; color: var(--color-text-muted); background: var(--color-bg); }
+.data-table tr:last-child td { border-bottom: none; }
+.data-table img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; }
+
+.form-grid {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.form-row { display: flex; flex-direction: column; gap: 4px; }
+.form-row--full { grid-column: 1 / -1; }
+
+.login-box {
+  max-width: 360px; margin: 80px auto; padding: var(--space-6);
+  background: var(--color-surface); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.status-pill {
+  display: inline-block; padding: 2px 10px; border-radius: var(--radius-pill);
+  font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase;
+}
+.status-CREATED { background: #E3F2FD; color: #0D47A1; }
+.status-WHATSAPP_OPENED { background: #FFF9C4; color: #827717; }
+.status-SENT { background: #FFF3E0; color: #E65100; }
+.status-CONFIRMED { background: #E8F5E9; color: #1B5E20; }
+.status-PREPARING { background: #FCE4EC; color: #880E4F; }
+.status-DELIVERING { background: #E1F5FE; color: #01579B; }
+.status-DELIVERED { background: #C8E6C9; color: #1B5E20; }
+.status-CANCELLED { background: #FFEBEE; color: #B71C1C; }

@@ -1,1 +1,16 @@
-{"name":"Mi Frutería","short_name":"MiFrutería","start_url":"./index.html","scope":"./","display":"standalone","theme_color":"#1E7A46","background_color":"#F7FAF5","icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}
+{
+  "name": "Mi Frutería — Frescura a tu mesa",
+  "short_name": "Mi Frutería",
+  "description": "Frutas y verduras frescas a domicilio.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F8FAF7",
+  "theme_color": "#2E7D32",
+  "lang": "es-MX",
+  "icons": [
+    { "src": "/assets/img/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/assets/img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

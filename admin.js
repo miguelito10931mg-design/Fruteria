@@ -1,507 +1,475 @@
-import {
-  fetchSettings, saveSettings, fetchCategories, saveCategory, removeCategory,
-  fetchAllProducts, saveProduct, removeProduct,
-  fetchZones, saveZone, removeZone,
-  fetchAllPromos, savePromo, removePromo,
-  fetchOrders, updateOrderStatus
-} from "./api.js";
-import { fmtMoney, fmtDateTime, escapeHtml } from "./utils.js";
-import { ADMIN_USER, ADMIN_PASS, ADMIN_KEY } from "./config.js";
+// ══════════════════════════════════════════════════════════
+// ADMIN — dashboard, productos, pedidos, settings
+// ══════════════════════════════════════════════════════════import { escapeHtml, money, store } from './core.js';
+import { dataProvider } from './data.js';
+import { toast, confirmModal } from './ui.js';
 
-const main = document.getElementById("admin-main");
-const tabs = document.getElementById("admin-tabs");
-const who = document.getElementById("admin-who");
+// PIN local — SOLO DEV. En producción reemplazar por Firebase Auth + custom claims.
+const ADMIN_PIN = '1234'; // ⚠️ Cambiar en producción
+const ADMIN_SESSION_KEY = 'mf:admin-session';
 
-const toast = (msg, type="") => {
-  const el = document.createElement("div");
-  el.className = `toast ${type}`;
-  el.textContent = msg;
-  document.getElementById("toasts").appendChild(el);
-  setTimeout(() => el.remove(), 3200);
-};
-
-const state = { tab: "dash", settings:null, cats:[], prods:[], zones:[], promos:[], orders:[] };
-
-function isLogged() { return localStorage.getItem(ADMIN_KEY) === "1"; }
-function logout() { localStorage.removeItem(ADMIN_KEY); render(); }
-
-async function loadAll() {
-  state.settings = await fetchSettings();
-  state.cats = await fetchCategories();
-  state.prods = await fetchAllProducts();
-  state.zones = await fetchZones();
-  state.promos = await fetchAllPromos();
-  state.orders = await fetchOrders();
+function isAdminAuthed() {
+  try {
+    const s = JSON.parse(localStorage.getItem(ADMIN_SESSION_KEY) || 'null');
+    return s && Date.now() - s.at < 8 * 60 * 60 * 1000;
+  } catch { return false; }
+}
+function setAdminAuthed() {
+  localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ at: Date.now() }));
+}
+function logoutAdmin() {
+  localStorage.removeItem(ADMIN_SESSION_KEY);
 }
 
-function renderLogin() {
-  tabs.hidden = true;
-  who.textContent = "";
-  main.innerHTML = `
-    <div class="card admin-login center">
-      <div style="font-size:48px">🔐</div>
-      <h2>Panel Administrativo</h2>
-      <p class="muted">Inicia sesión para administrar la tienda.</p>
-      <div class="field" style="text-align:left;margin-top:16px">
-        <label>Usuario</label>
-        <input id="l-user" autocomplete="username" value="">
-      </div>
-      <div class="field" style="text-align:left">
-        <label>Contraseña</label>
-        <input id="l-pass" type="password" autocomplete="current-password" value="">
-      </div>
-      <button class="btn btn-block" id="l-go">Entrar</button>
-      <p class="muted" style="font-size:12px;margin-top:12px">Demo local — usuario <b>${ADMIN_USER}</b> / contraseña <b>${ADMIN_PASS}</b></p>
+export function renderAdminLogin(root) {
+  root.innerHTML = `
+    <div class="login-box">
+      <h2 style="margin-top:0">Panel Admin</h2>
+      <p class="muted text-sm">Acceso restringido.</p>
+      <label class="label">PIN</label>
+      <input class="input" type="password" id="admin-pin" inputmode="numeric" autocomplete="off">
+      <button class="btn btn--block" id="admin-login" style="margin-top:16px">Entrar</button>
+      <a href="#/" class="btn btn--ghost btn--block" style="margin-top:8px">Volver a tienda</a>
     </div>`;
-  document.getElementById("l-go").onclick = () => {
-    const u = document.getElementById("l-user").value.trim();
-    const p = document.getElementById("l-pass").value;
-    if (u === ADMIN_USER && p === ADMIN_PASS) {
-      localStorage.setItem(ADMIN_KEY, "1");
-      render();
+  root.querySelector('#admin-login').addEventListener('click', () => {
+    if (root.querySelector('#admin-pin').value === ADMIN_PIN) {
+      setAdminAuthed();
+      location.hash = '#/admin';
     } else {
-      toast("Credenciales incorrectas", "err");
+      toast('PIN incorrecto', { type: 'error' });
     }
-  };
-  document.getElementById("l-pass").addEventListener("keydown", e => {
-    if (e.key === "Enter") document.getElementById("l-go").click();
+  });
+  root.querySelector('#admin-pin').addEventListener('keydown', e => {
+    if (e.key === 'Enter') root.querySelector('#admin-login').click();
   });
 }
 
-function renderTabs() {
-  tabs.hidden = false;
-  tabs.querySelectorAll("button").forEach(b => {
-    b.classList.toggle("active", b.dataset.tab === state.tab);
-    b.onclick = () => { state.tab = b.dataset.tab; render(); };
-  });
-}
+export async function renderDashboard(root) {
+  if (!isAdminAuthed()) { renderAdminLogin(root); return; }
+  const orders = await dataProvider.listOrders();
+  const products = await dataProvider.getProducts({ activeOnly: false });
 
-function render() {
-  if (!isLogged()) return renderLogin();
-  who.innerHTML = `👤 admin · <a href="#" id="lo" style="color:#fff;text-decoration:underline">Salir</a>`;
-  document.getElementById("lo").onclick = e => { e.preventDefault(); logout(); };
-  renderTabs();
-  if (state.tab === "dash") viewDash();
-  else if (state.tab === "orders") viewOrders();
-  else if (state.tab === "products") viewProducts();
-  else if (state.tab === "cats") viewCats();
-  else if (state.tab === "zones") viewZones();
-  else if (state.tab === "promos") viewPromos();
-  else if (state.tab === "settings") viewSettings();
-}
-
-// ─────────── Dashboard ───────────
-function viewDash() {
-  const orders = state.orders;
   const today = new Date().toDateString();
-  const todays = orders.filter(o => new Date(o.createdAt).toDateString() === today);
-  const revenue = orders.filter(o => o.status !== "cancelado").reduce((a,o) => a + Number(o.total||0), 0);
-  const pending = orders.filter(o => ["creado","confirmado","preparando"].includes(o.status)).length;
-  const lowStock = state.prods.filter(p => Number(p.stock) <= Number(p.lowStockAlert||0));
-  main.innerHTML = `
-    <h2>📊 Dashboard</h2>
-    <div class="stat-grid">
-      <div class="stat"><div class="n">${orders.length}</div><div class="l">Pedidos totales</div></div>
-      <div class="stat"><div class="n">${todays.length}</div><div class="l">Pedidos hoy</div></div>
-      <div class="stat"><div class="n">${fmtMoney(revenue)}</div><div class="l">Ingresos totales</div></div>
-      <div class="stat"><div class="n">${pending}</div><div class="l">Pedidos pendientes</div></div>
+  const todayOrders = orders.filter(o => new Date(o.createdAt).toDateString() === today);
+  const pending = orders.filter(o => ['CREATED','WHATSAPP_OPENED','SENT'].includes(o.status));
+  const confirmed = orders.filter(o => o.status === 'CONFIRMED');
+  const preparing = orders.filter(o => o.status === 'PREPARING');
+  const delivered = orders.filter(o => o.status === 'DELIVERED');
+  const lowStock = products.filter(p => p.isActive && p.stock > 0 && p.stock <= 5);
+  const outOfStock = products.filter(p => p.isActive && p.stock <= 0);
+  const todaySales = todayOrders.filter(o => o.status !== 'CANCELLED').reduce((s, o) => s + o.totalCents, 0);
+
+  root.innerHTML = `
+    <h2>Dashboard</h2>
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi__label">Pedidos hoy</div><div class="kpi__value">${todayOrders.length}</div></div>
+      <div class="kpi"><div class="kpi__label">Pendientes</div><div class="kpi__value">${pending.length}</div></div>
+      <div class="kpi"><div class="kpi__label">Confirmados</div><div class="kpi__value">${confirmed.length}</div></div>
+      <div class="kpi"><div class="kpi__label">En prep.</div><div class="kpi__value">${preparing.length}</div></div>
+      <div class="kpi"><div class="kpi__label">Entregados</div><div class="kpi__value">${delivered.length}</div></div>
+      <div class="kpi"><div class="kpi__label">Ventas hoy</div><div class="kpi__value">${money.format(todaySales)}</div></div>
+      <div class="kpi"><div class="kpi__label">Stock bajo</div><div class="kpi__value" style="color:var(--color-warning)">${lowStock.length}</div></div>
+      <div class="kpi"><div class="kpi__label">Agotados</div><div class="kpi__value" style="color:var(--color-danger)">${outOfStock.length}</div></div>
     </div>
-    <div class="card" style="margin-top:14px">
-      <h3 style="margin-top:0">⚠️ Bajo stock (${lowStock.length})</h3>
-      ${lowStock.length ? `<table class="table"><thead><tr><th>Producto</th><th>Stock</th><th>Alerta</th></tr></thead><tbody>${lowStock.map(p => `<tr><td>${escapeHtml(p.emoji||"")} ${escapeHtml(p.name)}</td><td>${p.stock}</td><td>${p.lowStockAlert||0}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">Todo en orden 🎉</p>`}
+
+    <div class="section__head"><h3>Últimos pedidos</h3>
+      <a href="#/admin/orders" class="section__link">Ver todos</a></div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Folio</th><th>Cliente</th><th>Total</th><th>Estado</th></tr></thead>
+        <tbody>
+          ${orders.slice(0, 10).map(o => `
+            <tr>
+              <td>${escapeHtml(o.folio)}</td>
+              <td>${escapeHtml(o.customer.name)}</td>
+              <td>${money.format(o.totalCents)}</td>
+              <td><span class="status-pill status-${o.status}">${o.status}</span></td>
+            </tr>`).join('') || '<tr><td colspan="4" class="muted">Sin pedidos</td></tr>'}
+        </tbody>
+      </table>
     </div>
-    <div class="card" style="margin-top:14px">
-      <h3 style="margin-top:0">🕒 Últimos pedidos</h3>
-      ${orders.slice(0,5).map(o => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px"><span><b>${escapeHtml(o.folio)}</b> · ${escapeHtml(o.customer?.name||"")}</span><span>${fmtMoney(o.total)} <span class="status ${o.status}">${o.status}</span></span></div>`).join("") || `<p class="muted">Sin pedidos aún.</p>`}
-    </div>`;
+
+    <button class="btn btn--ghost" style="margin-top:16px" id="admin-logout">Cerrar sesión</button>`;
+
+  root.querySelector('#admin-logout').addEventListener('click', () => {
+    logoutAdmin(); location.hash = '#/'; toast('Sesión cerrada');
+  });
 }
 
-// ─────────── Orders ───────────
-function viewOrders() {
-  const statuses = ["creado","confirmado","preparando","en_entrega","listo_recoger","entregado","cancelado"];
-  main.innerHTML = `<h2>📦 Pedidos (${state.orders.length})</h2>
-    ${state.orders.length ? state.orders.map(o => `
-      <div class="card" style="margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px">
-          <b>${escapeHtml(o.folio)}</b>
-          <span class="muted" style="font-size:12px">${fmtDateTime(o.createdAt)}</span>
+// ══════════ PRODUCTOS ══════════
+export async function renderAdminProducts(root) {
+  if (!isAdminAuthed()) { renderAdminLogin(root); return; }
+  const products = await dataProvider.getProducts({ activeOnly: false });
+  const categories = await dataProvider.getCategories();
+  const catMap = Object.fromEntries(categories.map(c => [c.id, c.name]));
+
+  root.innerHTML = `
+    <div class="section__head">
+      <h2>Productos</h2>
+      <button class="btn btn--sm" id="new-product">+ Nuevo</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Producto</th><th>Cat.</th><th>Precio</th><th>Stock</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          ${products.map(p => `
+            <tr>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px">
+                  ${p.imageUrl ? `<img src="${escapeHtml(p.imageUrl)}" alt="">` : ''}
+                  <div>
+                    <div style="font-weight:600">${escapeHtml(p.name)}</div>
+                    <div class="text-xs muted">${escapeHtml(p.baseUnit)}</div>
+                  </div>
+                </div>
+              </td>
+              <td>${escapeHtml(catMap[p.categoryId] || '—')}</td>
+              <td>${money.format(p.isOnSale && p.salePriceCents != null ? p.salePriceCents : p.priceCents)}</td>
+              <td>${p.stock}</td>
+              <td>${p.isActive
+                ? '<span class="badge badge--ok">Activo</span>'
+                : '<span class="badge">Inactivo</span>'}</td>
+              <td style="white-space:nowrap">
+                <button class="btn btn--sm btn--ghost" data-edit="${p.id}">Editar</button>
+                <button class="btn btn--sm btn--ghost" data-toggle="${p.id}">${p.isActive ? 'Off' : 'On'}</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div id="product-form-wrap" style="margin-top:24px"></div>`;
+
+  root.querySelector('#new-product').addEventListener('click', () => openProductForm(root, null));
+  root.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', async () => {
+    const prod = await dataProvider.getProductById(b.dataset.edit);
+    openProductForm(root, prod);
+  }));
+  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', async () => {
+    const prod = await dataProvider.getProductById(b.dataset.toggle);
+    await dataProvider.upsertProduct({ ...prod, isActive: !prod.isActive });
+    toast(prod.isActive ? 'Producto desactivado' : 'Producto activado', { type: 'success' });
+    renderAdminProducts(root);
+  }));
+}
+
+function openProductForm(root, product) {
+  const wrap = root.querySelector('#product-form-wrap');
+  const p = product || {
+    id: `p_${Date.now()}`, name: '', description: '', categoryId: 'cat_frutas',
+    priceCents: 0, baseUnit: 'kg', stock: 0,
+    allowedUnits: [{ unit: 'kg', factor: 1, label: '1 kg' }],
+    minQty: 0.25, maxQty: 10, isActive: true, isFeatured: false,
+    isOnSale: false, salePriceCents: null, sortOrder: 0, imageUrl: ''
+  };
+  const pricePesos = (p.priceCents / 100).toFixed(2);
+  const salePesos = p.salePriceCents != null ? (p.salePriceCents / 100).toFixed(2) : '';
+  wrap.innerHTML = `
+    <div class="card" style="padding:20px">
+      <h3>${product ? 'Editar producto' : 'Nuevo producto'}</h3>
+      <div class="form-grid">
+        <div class="form-row form-row--full">
+          <label class="label">Nombre *</label>
+          <input class="input" name="name" value="${escapeHtml(p.name)}">
         </div>
-        <div class="muted" style="font-size:13px;margin:4px 0">${escapeHtml(o.customer?.name||"")} · ${escapeHtml(o.customer?.phone||"")}</div>
-        <div class="muted" style="font-size:13px">${o.delivery?.method==="domicilio" ? `🚚 ${escapeHtml(o.delivery?.address||"")}` : "🏪 Recoger"}</div>
-        <div style="margin:8px 0;font-size:14px">${(o.items||[]).map(it => `· ${it.units} × ${escapeHtml(it.name)} — ${fmtMoney(it.lineTotal)}`).join("<br>")}</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-          <b style="color:var(--brand-dark);font-size:16px">${fmtMoney(o.total)}</b>
-          <select data-oid="${o.id}" class="ord-status" style="padding:8px;border-radius:10px;border:1.5px solid var(--line)">
-            ${statuses.map(s => `<option value="${s}" ${o.status===s?"selected":""}>${s}</option>`).join("")}
+        <div class="form-row form-row--full">
+          <label class="label">Descripción</label>
+          <textarea class="textarea" name="description">${escapeHtml(p.description || '')}</textarea>
+        </div>
+        <div class="form-row">
+          <label class="label">Categoría</label>
+          <select class="select" name="categoryId">
+            ${seedCategoryOptions(p.categoryId)}
           </select>
         </div>
-      </div>`).join("") : `<p class="muted">Sin pedidos aún.</p>`}`;
-  main.querySelectorAll(".ord-status").forEach(sel => {
-    sel.onchange = async () => {
-      await updateOrderStatus(sel.dataset.oid, sel.value);
-      await loadAll();
-      toast("Estado actualizado", "ok");
-      viewOrders();
-    };
-  });
-}
+        <div class="form-row">
+          <label class="label">Unidad base</label>
+          <select class="select" name="baseUnit">
+            ${['kg','pza','manojo','bolsa','caja'].map(u => `<option ${u === p.baseUnit ? 'selected' : ''}>${u}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="label">Precio *</label>
+          <input class="input" name="price" type="number" step="0.01" value="${pricePesos}">
+        </div>
+        <div class="form-row">
+          <label class="label">Stock</label>
+          <input class="input" name="stock" type="number" step="0.1" value="${p.stock}">
+        </div>
+        <div class="form-row">
+          <label class="label">En oferta</label>
+          <select class="select" name="isOnSale">
+            <option value="0" ${!p.isOnSale ? 'selected' : ''}>No</option>
+            <option value="1" ${p.isOnSale ? 'selected' : ''}>Sí</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="label">Precio oferta</label>
+          <input class="input" name="salePrice" type="number" step="0.01" value="${salePesos}">
+        </div>
+        <div class="form-row form-row--full">
+          <label class="label">URL imagen (opcional)</label>
+          <input class="input" name="imageUrl" value="${escapeHtml(p.imageUrl || '')}" placeholder="/assets/img/products/foto.jpg">
+        </div>
+        <div class="form-row">
+          <label class="label">Destacado</label>
+          <select class="select" name="isFeatured">
+            <option value="0" ${!p.isFeatured ? 'selected' : ''}>No</option>
+            <option value="1" ${p.isFeatured ? 'selected' : ''}>Sí</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="label">Activo</label>
+          <select class="select" name="isActive">
+            <option value="1" ${p.isActive ? 'selected' : ''}>Sí</option>
+            <option value="0" ${!p.isActive ? 'selected' : ''}>No</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="btn btn--ghost" id="cancel-product">Cancelar</button>
+        <button class="btn" id="save-product" style="flex:1">Guardar</button>
+        ${product ? `<button class="btn btn--danger" id="delete-product">Eliminar</button>` : ''}
+      </div>
+    </div>`;
 
-// ─────────── Products ───────────
-function viewProducts() {
-  main.innerHTML = `
-    <div class="block-h"><h2>🥕 Productos (${state.prods.length})</h2><button class="btn btn-sm" id="np">+ Nuevo</button></div>
-    <table class="table"><thead><tr><th></th><th>Nombre</th><th>Categoría</th><th>Precio</th><th>Stock</th><th>Activo</th><th></th></tr></thead><tbody>
-      ${state.prods.map(p => {
-        const cat = state.cats.find(c => c.id === p.categoryId);
-        return `<tr>
-          <td>${p.imageUrl ? `<img src="${escapeHtml(p.imageUrl)}">` : `<span style="font-size:28px">${p.emoji||"🥬"}</span>`}</td>
-          <td><b>${escapeHtml(p.name)}</b><br><small class="muted">${escapeHtml(p.unitLabel||p.unit||"")}</small></td>
-          <td>${cat ? `${cat.emoji||""} ${escapeHtml(cat.name)}` : "—"}</td>
-          <td>${fmtMoney(p.price)}${p.isOffer && p.offerPrice>0 ? `<br><small class="tag off">Oferta ${fmtMoney(p.offerPrice)}</small>`:""}</td>
-          <td>${p.stock}${Number(p.stock)<=Number(p.lowStockAlert||0) ? ` <span class="tag off">bajo</span>`:""}</td>
-          <td>${p.active!==false ? "✅" : "❌"}</td>
-          <td><button class="btn btn-sm btn-ghost" data-edit="${p.id}">Editar</button> <button class="btn btn-sm" style="background:var(--danger)" data-del="${p.id}">✕</button></td>
-        </tr>`;
-      }).join("") || `<tr><td colspan="7" class="muted">Sin productos.</td></tr>`}
-    </tbody></table>`;
-  document.getElementById("np").onclick = () => editProduct(null);
-  main.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => editProduct(state.prods.find(x => x.id === b.dataset.edit)));
-  main.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("¿Eliminar producto?")) return;
-    await removeProduct(b.dataset.del);
-    await loadAll(); render();
-  });
-}
+  wrap.querySelector('#cancel-product').addEventListener('click', () => { wrap.innerHTML = ''; });
+  wrap.querySelector('#save-product').addEventListener('click', async () => {
+    const name = wrap.querySelector('[name="name"]').value.trim();
+    if (!name) { toast('Falta el nombre', { type: 'error' }); return; }
+    const price = parseFloat(wrap.querySelector('[name="price"]').value);
+    if (!(price > 0)) { toast('Precio inválido', { type: 'error' }); return; }
+    const saleStr = wrap.querySelector('[name="salePrice"]').value;
+    const salePrice = saleStr ? parseFloat(saleStr) : null;
+    const isOnSale = wrap.querySelector('[name="isOnSale"]').value === '1' && salePrice > 0;
 
-function editProduct(p) {
-  const isNew = !p;
-  p = p || { name:"", description:"", emoji:"🥬", imageUrl:"", categoryId:(state.cats[0]||{}).id||"", sellBy:"unidad", price:0, offerPrice:0, isOffer:false, fractions:[1], unit:"pieza", unitLabel:"pieza", stock:0, lowStockAlert:5, minQty:1, maxQty:10, active:true, isFeatured:false, isBestSeller:false, isSeasonal:false, selectionNote:"", order:state.prods.length+1 };
-  document.getElementById("modal-root").innerHTML = `
-    <div class="modal-back" id="mb"><div class="modal">
-      <h3>${isNew ? "Nuevo producto" : "Editar producto"}</h3>
-      <div class="field"><label>Nombre *</label><input id="f-name" value="${escapeHtml(p.name)}"></div>
-      <div class="field"><label>Descripción</label><textarea id="f-desc" rows="2">${escapeHtml(p.description||"")}</textarea></div>
-      <div class="row">
-        <div class="field"><label>Emoji</label><input id="f-emoji" value="${escapeHtml(p.emoji||"")}"></div>
-        <div class="field"><label>Imagen URL</label><input id="f-img" value="${escapeHtml(p.imageUrl||"")}"></div>
-      </div>
-      <div class="field"><label>Categoría</label><select id="f-cat">${state.cats.map(c => `<option value="${c.id}" ${p.categoryId===c.id?"selected":""}>${c.emoji||""} ${escapeHtml(c.name)}</option>`).join("")}</select></div>
-      <div class="row">
-        <div class="field"><label>Venta por</label><select id="f-sellby"><option value="unidad" ${p.sellBy==="unidad"?"selected":""}>Unidad</option><option value="peso" ${p.sellBy==="peso"?"selected":""}>Peso</option></select></div>
-        <div class="field"><label>Unidad (kg, manojo…)</label><input id="f-unit" value="${escapeHtml(p.unitLabel||p.unit||"pieza")}"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Precio *</label><input id="f-price" type="number" step="0.01" value="${p.price||0}"></div>
-        <div class="field"><label>Oferta (0 = sin oferta)</label><input id="f-offer" type="number" step="0.01" value="${p.offerPrice||0}"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Stock</label><input id="f-stock" type="number" step="0.01" value="${p.stock||0}"></div>
-        <div class="field"><label>Alerta stock bajo</label><input id="f-low" type="number" value="${p.lowStockAlert||0}"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Mín. compra</label><input id="f-minq" type="number" value="${p.minQty||1}"></div>
-        <div class="field"><label>Máx. compra</label><input id="f-maxq" type="number" value="${p.maxQty||99}"></div>
-      </div>
-      <div class="field"><label>Nota de selección</label><input id="f-note" value="${escapeHtml(p.selectionNote||"")}"></div>
-      <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:14px;margin:10px 0">
-        <label><input type="checkbox" id="f-active" ${p.active!==false?"checked":""}> Activo</label>
-        <label><input type="checkbox" id="f-feat" ${p.isFeatured?"checked":""}> Destacado</label>
-        <label><input type="checkbox" id="f-best" ${p.isBestSeller?"checked":""}> Más vendido</label>
-        <label><input type="checkbox" id="f-season" ${p.isSeasonal?"checked":""}> Temporada</label>
-      </div>
-      <div class="row">
-        <button class="btn btn-ghost" data-close>Cancelar</button>
-        <button class="btn btn-accent" id="f-save">Guardar</button>
-      </div>
-    </div></div>`;
-  const close = () => document.getElementById("modal-root").innerHTML = "";
-  document.querySelectorAll("[data-close]").forEach(b => b.onclick = close);
-  document.getElementById("mb").onclick = e => { if (e.target.id === "mb") close(); };
-  document.getElementById("f-save").onclick = async () => {
-    const data = {
+    const updated = {
       ...p,
-      name: document.getElementById("f-name").value.trim(),
-      description: document.getElementById("f-desc").value.trim(),
-      emoji: document.getElementById("f-emoji").value.trim(),
-      imageUrl: document.getElementById("f-img").value.trim(),
-      categoryId: document.getElementById("f-cat").value,
-      sellBy: document.getElementById("f-sellby").value,
-      unit: document.getElementById("f-unit").value.trim(),
-      unitLabel: document.getElementById("f-unit").value.trim(),
-      price: Number(document.getElementById("f-price").value),
-      offerPrice: Number(document.getElementById("f-offer").value),
-      isOffer: Number(document.getElementById("f-offer").value) > 0 && Number(document.getElementById("f-offer").value) < Number(document.getElementById("f-price").value),
-      stock: Number(document.getElementById("f-stock").value),
-      lowStockAlert: Number(document.getElementById("f-low").value),
-      minQty: Number(document.getElementById("f-minq").value),
-      maxQty: Number(document.getElementById("f-maxq").value),
-      selectionNote: document.getElementById("f-note").value.trim(),
-      active: document.getElementById("f-active").checked,
-      isFeatured: document.getElementById("f-feat").checked,
-      isBestSeller: document.getElementById("f-best").checked,
-      isSeasonal: document.getElementById("f-season").checked
+      name,
+      description: wrap.querySelector('[name="description"]').value.trim(),
+      categoryId: wrap.querySelector('[name="categoryId"]').value,
+      baseUnit: wrap.querySelector('[name="baseUnit"]').value,
+      priceCents: Math.round(price * 100),
+      stock: parseFloat(wrap.querySelector('[name="stock"]').value) || 0,
+      isOnSale,
+      salePriceCents: isOnSale ? Math.round(salePrice * 100) : null,
+      imageUrl: wrap.querySelector('[name="imageUrl"]').value.trim(),
+      isFeatured: wrap.querySelector('[name="isFeatured"]').value === '1',
+      isActive: wrap.querySelector('[name="isActive"]').value === '1'
     };
-    if (!data.name || !data.price) return toast("Nombre y precio son obligatorios", "err");
-    if (data.sellBy === "peso" && (!data.fractions || !data.fractions.length)) data.fractions = [1, 0.5, 0.25];
-    if (data.sellBy === "unidad") data.fractions = [1];
-    await saveProduct(data);
-    close(); await loadAll(); render(); toast("Guardado", "ok");
-  };
+    await dataProvider.upsertProduct(updated);
+    toast('Guardado', { type: 'success' });
+    renderAdminProducts(root);
+  });
+  if (product) {
+    wrap.querySelector('#delete-product').addEventListener('click', async () => {
+      const ok = await confirmModal({ title: 'Eliminar', message: `¿Eliminar "${product.name}"?`, confirmText: 'Eliminar' });
+      if (!ok) return;
+      await dataProvider.deleteProduct(product.id);
+      toast('Producto eliminado', { type: 'success' });
+      renderAdminProducts(root);
+    });
+  }
 }
 
-// ─────────── Categories ───────────
-function viewCats() {
-  main.innerHTML = `
-    <div class="block-h"><h2>🗂️ Categorías (${state.cats.length})</h2><button class="btn btn-sm" id="nc">+ Nueva</button></div>
-    <table class="table"><thead><tr><th>Emoji</th><th>Nombre</th><th>Orden</th><th>Activa</th><th></th></tr></thead><tbody>
-      ${state.cats.map(c => `<tr>
-        <td style="font-size:22px">${c.emoji||""}</td>
-        <td><b>${escapeHtml(c.name)}</b></td>
-        <td>${c.order||0}</td>
-        <td>${c.active!==false ? "✅" : "❌"}</td>
-        <td><button class="btn btn-sm btn-ghost" data-edit="${c.id}">Editar</button> <button class="btn btn-sm" style="background:var(--danger)" data-del="${c.id}">✕</button></td>
-      </tr>`).join("")}
-    </tbody></table>`;
-  document.getElementById("nc").onclick = () => editCategory(null);
-  main.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => editCategory(state.cats.find(x => x.id === b.dataset.edit)));
-  main.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("¿Eliminar categoría?")) return;
-    await removeCategory(b.dataset.del);
-    await loadAll(); render();
+function seedCategoryOptions(selectedId) {
+  const cats = [
+    { id: 'cat_frutas', name: 'Frutas' },
+    { id: 'cat_verduras', name: 'Verduras' },
+    { id: 'cat_citricos', name: 'Cítricos' },
+    { id: 'cat_aguacates', name: 'Aguacates' },
+    { id: 'cat_tuberculos', name: 'Tubérculos' },
+    { id: 'cat_hierbas', name: 'Hierbas y especias' },
+    { id: 'cat_combos', name: 'Combos y paquetes' },
+    { id: 'cat_ofertas', name: 'Ofertas' }
+  ];
+  return cats.map(c => `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.name}</option>`).join('');
+}
+
+// ══════════ PEDIDOS ══════════
+export async function renderAdminOrders(root) {
+  if (!isAdminAuthed()) { renderAdminLogin(root); return; }
+  const orders = await dataProvider.listOrders();
+
+  root.innerHTML = `
+    <h2>Pedidos</h2>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>
+          ${orders.map(o => `
+            <tr>
+              <td>${escapeHtml(o.folio)}</td>
+              <td>${new Date(o.createdAt).toLocaleString('es-MX')}</td>
+              <td>${escapeHtml(o.customer.name)}<br><span class="text-xs muted">${escapeHtml(o.customer.phone)}</span></td>
+              <td>${money.format(o.totalCents)}</td>
+              <td><span class="status-pill status-${o.status}">${o.status}</span></td>
+              <td>
+                <button class="btn btn--sm btn--ghost" data-view="${o.id}">Ver</button>
+              </td>
+            </tr>`).join('') || '<tr><td colspan="6" class="muted">Sin pedidos</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div id="order-detail" style="margin-top:24px"></div>`;
+
+  root.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', async () => {
+    const order = orders.find(o => o.id === b.dataset.view);
+    showOrderDetail(root, order);
+  }));
+}
+
+function showOrderDetail(root, order) {
+  const wrap = root.querySelector('#order-detail');
+  const statuses = ['CONFIRMED','PREPARING','DELIVERING','DELIVERED','CANCELLED'];
+  wrap.innerHTML = `
+    <div class="card" style="padding:20px">
+      <h3>Pedido ${escapeHtml(order.folio)}</h3>
+      <p class="text-sm muted">${new Date(order.createdAt).toLocaleString('es-MX')} · Estado: <span class="status-pill status-${order.status}">${order.status}</span></p>
+
+      <div class="review-box">
+        <h4>Cliente</h4>
+        <div class="review-line"><span>Nombre</span><span>${escapeHtml(order.customer.name)}</span></div>
+        <div class="review-line"><span>Teléfono</span><span>${escapeHtml(order.customer.phone)}</span></div>
+      </div>
+
+      <div class="review-box">
+        <h4>Productos</h4>
+        ${order.items.map(it => `
+          <div class="review-line">
+            <span>${it.quantity} × ${escapeHtml(it.unitSnapshot)} ${escapeHtml(it.nameSnapshot)}</span>
+            <span>${money.format(it.subtotalCents)}</span>
+          </div>`).join('')}
+      </div>
+
+      <div class="review-box">
+        <h4>${order.delivery.method === 'delivery' ? 'Entrega' : 'Recolección'}</h4>
+        ${order.delivery.method === 'delivery' ? `
+          <div class="review-line"><span>Dirección</span><span>${escapeHtml(order.delivery.address)}</span></div>
+          ${order.delivery.references ? `<div class="review-line"><span>Referencias</span><span>${escapeHtml(order.delivery.references)}</span></div>` : ''}
+        ` : ''}
+        <div class="review-line"><span>Fecha</span><span>${escapeHtml(order.schedule.date)}</span></div>
+        <div class="review-line"><span>Horario</span><span>${escapeHtml(order.schedule.window)}</span></div>
+        <div class="review-line"><span>Pago</span><span>${order.payment.method === 'cash' ? 'Efectivo' : 'Tarjeta'}</span></div>
+      </div>
+
+      <div class="review-box">
+        <h4>Totales</h4>
+        <div class="review-line"><span>Subtotal</span><span>${money.format(order.subtotalCents)}</span></div>
+        <div class="review-line"><span>Envío</span><span>${money.format(order.deliveryFeeCents)}</span></div>
+        <div class="review-line" style="font-weight:700;color:var(--color-primary)">
+          <span>Total</span><span>${money.format(order.totalCents)}</span>
+        </div>
+      </div>
+
+      ${order.notes ? `<div class="info-box"><strong>Notas:</strong> ${escapeHtml(order.notes)}</div>` : ''}
+
+      <h4 style="margin-top:20px">Cambiar estado</h4>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${statuses.map(s => `
+          <button class="btn btn--sm btn--ghost" data-status="${s}" ${s === order.status ? 'disabled' : ''}>${s}</button>
+        `).join('')}
+      </div>
+    </div>`;
+
+  wrap.querySelectorAll('[data-status]').forEach(b => b.addEventListener('click', async () => {
+    await dataProvider.updateOrderStatus(order.id, b.dataset.status);
+    toast('Estado actualizado', { type: 'success' });
+    renderAdminOrders(root);
+  }));
+}
+
+// ══════════ SETTINGS ══════════
+export async function renderAdminSettings(root) {
+  if (!isAdminAuthed()) { renderAdminLogin(root); return; }
+  const settings = await dataProvider.getSettings();
+
+  root.innerHTML = `
+    <h2>Configuración del negocio</h2>
+    <div class="card" style="padding:20px">
+      <div class="form-grid">
+        <div class="form-row form-row--full">
+          <label class="label">Nombre comercial</label>
+          <input class="input" name="business-name" value="${escapeHtml(settings.business.name)}">
+        </div>
+        <div class="form-row form-row--full">
+          <label class="label">Eslogan</label>
+          <input class="input" name="business-slogan" value="${escapeHtml(settings.business.slogan || '')}">
+        </div>
+        <div class="form-row">
+          <label class="label">WhatsApp (521XXXXXXXXXX)</label>
+          <input class="input" name="business-whatsapp" value="${escapeHtml(settings.business.whatsapp || '')}">
+        </div>
+        <div class="form-row">
+          <label class="label">Teléfono</label>
+          <input class="input" name="business-phone" value="${escapeHtml(settings.business.phone || '')}">
+        </div>
+        <div class="form-row form-row--full">
+          <label class="label">Dirección</label>
+          <input class="input" name="business-address" value="${escapeHtml(settings.business.address || '')}">
+        </div>
+        <div class="form-row">
+          <label class="label">Pedido mínimo (MXN)</label>
+          <input class="input" name="delivery-min" type="number" step="0.01" value="${(settings.delivery.minOrderCents/100).toFixed(2)}">
+        </div>
+        <div class="form-row">
+          <label class="label">Envío por defecto (MXN)</label>
+          <input class="input" name="delivery-fee" type="number" step="0.01" value="${(settings.delivery.defaultFeeCents/100).toFixed(2)}">
+        </div>
+        <div class="form-row">
+          <label class="label">Pago efectivo</label>
+          <select class="select" name="payment-cash">
+            <option value="1" ${settings.payments.cash ? 'selected' : ''}>Sí</option>
+            <option value="0" ${!settings.payments.cash ? 'selected' : ''}>No</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="label">Color primario</label>
+          <input class="input" name="brand-primary" type="color" value="${settings.branding.colorPrimary}">
+        </div>
+        <div class="form-row">
+          <label class="label">Color acento</label>
+          <input class="input" name="brand-accent" type="color" value="${settings.branding.colorAccent}">
+        </div>
+      </div>
+      <button class="btn btn--block" style="margin-top:20px" id="save-settings">Guardar configuración</button>
+      <button class="btn btn--ghost btn--block" style="margin-top:8px" id="export-data">Exportar backup JSON</button>
+    </div>`;
+
+  root.querySelector('#save-settings').addEventListener('click', async () => {
+    const next = JSON.parse(JSON.stringify(settings));
+    next.business.name = root.querySelector('[name="business-name"]').value;
+    next.business.slogan = root.querySelector('[name="business-slogan"]').value;
+    next.business.whatsapp = root.querySelector('[name="business-whatsapp"]').value.trim();
+    next.business.phone = root.querySelector('[name="business-phone"]').value.trim();
+    next.business.address = root.querySelector('[name="business-address"]').value;
+    next.delivery.minOrderCents = Math.round(parseFloat(root.querySelector('[name="delivery-min"]').value) * 100);
+    next.delivery.defaultFeeCents = Math.round(parseFloat(root.querySelector('[name="delivery-fee"]').value) * 100);
+    next.payments.cash = root.querySelector('[name="payment-cash"]').value === '1';
+    next.branding.colorPrimary = root.querySelector('[name="brand-primary"]').value;
+    next.branding.colorAccent = root.querySelector('[name="brand-accent"]').value;
+    await dataProvider.saveSettings(next);
+    store.set({ config: next });
+    applyBranding(next);
+    toast('Configuración guardada', { type: 'success' });
+  });
+
+  root.querySelector('#export-data').addEventListener('click', async () => {
+    const orders = await dataProvider.listOrders();
+    const products = await dataProvider.getProducts({ activeOnly: false });
+    const backup = { settings, products, orders, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mi-fruteria-backup-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Backup exportado', { type: 'success' });
   });
 }
-function editCategory(c) {
-  const isNew = !c;
-  c = c || { name:"", emoji:"🥬", order: state.cats.length+1, active:true };
-  document.getElementById("modal-root").innerHTML = `
-    <div class="modal-back" id="mb"><div class="modal">
-      <h3>${isNew ? "Nueva categoría" : "Editar categoría"}</h3>
-      <div class="field"><label>Nombre *</label><input id="c-name" value="${escapeHtml(c.name)}"></div>
-      <div class="row">
-        <div class="field"><label>Emoji</label><input id="c-emoji" value="${escapeHtml(c.emoji||"")}"></div>
-        <div class="field"><label>Orden</label><input id="c-order" type="number" value="${c.order||0}"></div>
-      </div>
-      <label style="display:flex;gap:8px;margin:10px 0"><input type="checkbox" id="c-active" ${c.active!==false?"checked":""}> Activa</label>
-      <div class="row">
-        <button class="btn btn-ghost" data-close>Cancelar</button>
-        <button class="btn btn-accent" id="c-save">Guardar</button>
-      </div>
-    </div></div>`;
-  const close = () => document.getElementById("modal-root").innerHTML = "";
-  document.querySelectorAll("[data-close]").forEach(b => b.onclick = close);
-  document.getElementById("mb").onclick = e => { if (e.target.id === "mb") close(); };
-  document.getElementById("c-save").onclick = async () => {
-    const data = {
-      ...c,
-      name: document.getElementById("c-name").value.trim(),
-      emoji: document.getElementById("c-emoji").value.trim(),
-      order: Number(document.getElementById("c-order").value),
-      active: document.getElementById("c-active").checked
-    };
-    if (!data.name) return toast("Nombre obligatorio", "err");
-    await saveCategory(data);
-    close(); await loadAll(); render(); toast("Guardado", "ok");
-  };
-}
 
-// ─────────── Zones ───────────
-function viewZones() {
-  main.innerHTML = `
-    <div class="block-h"><h2>🚚 Zonas (${state.zones.length})</h2><button class="btn btn-sm" id="nz">+ Nueva</button></div>
-    <table class="table"><thead><tr><th>Nombre</th><th>Envío</th><th>Mínimo</th><th>Activa</th><th></th></tr></thead><tbody>
-      ${state.zones.map(z => `<tr>
-        <td><b>${escapeHtml(z.name)}</b></td>
-        <td>${fmtMoney(z.fee)}</td>
-        <td>${fmtMoney(z.minOrder)}</td>
-        <td>${z.active!==false ? "✅" : "❌"}</td>
-        <td><button class="btn btn-sm btn-ghost" data-edit="${z.id}">Editar</button> <button class="btn btn-sm" style="background:var(--danger)" data-del="${z.id}">✕</button></td>
-      </tr>`).join("")}
-    </tbody></table>`;
-  document.getElementById("nz").onclick = () => editZone(null);
-  main.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => editZone(state.zones.find(x => x.id === b.dataset.edit)));
-  main.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("¿Eliminar zona?")) return;
-    await removeZone(b.dataset.del);
-    await loadAll(); render();
-  });
+function applyBranding(config) {
+  document.documentElement.style.setProperty('--color-primary', config.branding.colorPrimary);
+  document.documentElement.style.setProperty('--color-accent', config.branding.colorAccent);
+  document.querySelectorAll('[data-bind="business.name"]').forEach(el => { el.textContent = config.business.name; });
 }
-function editZone(z) {
-  const isNew = !z;
-  z = z || { name:"", fee:0, minOrder:0, active:true };
-  document.getElementById("modal-root").innerHTML = `
-    <div class="modal-back" id="mb"><div class="modal">
-      <h3>${isNew ? "Nueva zona" : "Editar zona"}</h3>
-      <div class="field"><label>Nombre *</label><input id="z-name" value="${escapeHtml(z.name)}"></div>
-      <div class="row">
-        <div class="field"><label>Costo de envío</label><input id="z-fee" type="number" step="0.01" value="${z.fee}"></div>
-        <div class="field"><label>Pedido mínimo</label><input id="z-min" type="number" step="0.01" value="${z.minOrder}"></div>
-      </div>
-      <label style="display:flex;gap:8px;margin:10px 0"><input type="checkbox" id="z-active" ${z.active!==false?"checked":""}> Activa</label>
-      <div class="row">
-        <button class="btn btn-ghost" data-close>Cancelar</button>
-        <button class="btn btn-accent" id="z-save">Guardar</button>
-      </div>
-    </div></div>`;
-  const close = () => document.getElementById("modal-root").innerHTML = "";
-  document.querySelectorAll("[data-close]").forEach(b => b.onclick = close);
-  document.getElementById("mb").onclick = e => { if (e.target.id === "mb") close(); };
-  document.getElementById("z-save").onclick = async () => {
-    const data = {
-      ...z,
-      name: document.getElementById("z-name").value.trim(),
-      fee: Number(document.getElementById("z-fee").value),
-      minOrder: Number(document.getElementById("z-min").value),
-      active: document.getElementById("z-active").checked
-    };
-    if (!data.name) return toast("Nombre obligatorio", "err");
-    await saveZone(data);
-    close(); await loadAll(); render(); toast("Guardado", "ok");
-  };
-}
-
-// ─────────── Promos ───────────
-function viewPromos() {
-  main.innerHTML = `
-    <div class="block-h"><h2>🏷️ Promociones (${state.promos.length})</h2><button class="btn btn-sm" id="npr">+ Nueva</button></div>
-    <table class="table"><thead><tr><th>Nombre</th><th>Tipo</th><th>Valor</th><th>Mín. subtotal</th><th>Activa</th><th></th></tr></thead><tbody>
-      ${state.promos.map(p => `<tr>
-        <td><b>${escapeHtml(p.name)}</b></td>
-        <td>${p.type === "percent" ? "%" : "$"}</td>
-        <td>${p.type === "percent" ? p.value + "%" : fmtMoney(p.value)}</td>
-        <td>${fmtMoney(p.minSubtotal||0)}</td>
-        <td>${p.active!==false ? "✅" : "❌"}</td>
-        <td><button class="btn btn-sm btn-ghost" data-edit="${p.id}">Editar</button> <button class="btn btn-sm" style="background:var(--danger)" data-del="${p.id}">✕</button></td>
-      </tr>`).join("") || `<tr><td colspan="6" class="muted">Sin promociones.</td></tr>`}
-    </tbody></table>`;
-  document.getElementById("npr").onclick = () => editPromo(null);
-  main.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => editPromo(state.promos.find(x => x.id === b.dataset.edit)));
-  main.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("¿Eliminar promoción?")) return;
-    await removePromo(b.dataset.del);
-    await loadAll(); render();
-  });
-}
-function editPromo(pr) {
-  const isNew = !pr;
-  pr = pr || { name:"", type:"percent", value:0, minSubtotal:0, active:true };
-  document.getElementById("modal-root").innerHTML = `
-    <div class="modal-back" id="mb"><div class="modal">
-      <h3>${isNew ? "Nueva promoción" : "Editar promoción"}</h3>
-      <div class="field"><label>Nombre *</label><input id="pr-name" value="${escapeHtml(pr.name)}"></div>
-      <div class="row">
-        <div class="field"><label>Tipo</label><select id="pr-type"><option value="percent" ${pr.type==="percent"?"selected":""}>Porcentaje</option><option value="fixed" ${pr.type==="fixed"?"selected":""}>Monto fijo</option></select></div>
-        <div class="field"><label>Valor</label><input id="pr-value" type="number" step="0.01" value="${pr.value}"></div>
-      </div>
-      <div class="field"><label>Subtotal mínimo</label><input id="pr-min" type="number" step="0.01" value="${pr.minSubtotal||0}"></div>
-      <label style="display:flex;gap:8px;margin:10px 0"><input type="checkbox" id="pr-active" ${pr.active!==false?"checked":""}> Activa</label>
-      <div class="row">
-        <button class="btn btn-ghost" data-close>Cancelar</button>
-        <button class="btn btn-accent" id="pr-save">Guardar</button>
-      </div>
-    </div></div>`;
-  const close = () => document.getElementById("modal-root").innerHTML = "";
-  document.querySelectorAll("[data-close]").forEach(b => b.onclick = close);
-  document.getElementById("mb").onclick = e => { if (e.target.id === "mb") close(); };
-  document.getElementById("pr-save").onclick = async () => {
-    const data = {
-      ...pr,
-      name: document.getElementById("pr-name").value.trim(),
-      type: document.getElementById("pr-type").value,
-      value: Number(document.getElementById("pr-value").value),
-      minSubtotal: Number(document.getElementById("pr-min").value),
-      active: document.getElementById("pr-active").checked
-    };
-    if (!data.name || !data.value) return toast("Nombre y valor obligatorios", "err");
-    await savePromo(data);
-    close(); await loadAll(); render(); toast("Guardado", "ok");
-  };
-}
-
-// ─────────── Settings ───────────
-function viewSettings() {
-  const s = state.settings;
-  main.innerHTML = `
-    <h2>⚙️ Ajustes</h2>
-    <div class="card">
-      <h3 style="margin-top:0">Marca</h3>
-      <div class="row">
-        <div class="field"><label>Nombre</label><input id="s-brand" value="${escapeHtml(s.brand?.name||"")}"></div>
-        <div class="field"><label>Slogan</label><input id="s-slogan" value="${escapeHtml(s.brand?.slogan||"")}"></div>
-      </div>
-      <div class="field"><label>Logo URL</label><input id="s-logo" value="${escapeHtml(s.brand?.logoUrl||"")}"></div>
-      <div class="row">
-        <div class="field"><label>Color primario</label><input id="s-c1" type="color" value="${s.brand?.colors?.primary||"#1E7A46"}" style="height:44px;padding:4px"></div>
-        <div class="field"><label>Color acento</label><input id="s-c2" type="color" value="${s.brand?.colors?.accent||"#FF8A3D"}" style="height:44px;padding:4px"></div>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h3 style="margin-top:0">Contacto</h3>
-      <div class="field"><label>WhatsApp</label><input id="s-wa" value="${escapeHtml(s.contact?.whatsapp||"")}"></div>
-      <div class="row">
-        <div class="field"><label>Teléfono</label><input id="s-phone" value="${escapeHtml(s.contact?.phone||"")}"></div>
-        <div class="field"><label>Email</label><input id="s-email" value="${escapeHtml(s.contact?.email||"")}"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Calle</label><input id="s-street" value="${escapeHtml(s.address?.street||"")}"></div>
-        <div class="field"><label>Ciudad</label><input id="s-city" value="${escapeHtml(s.address?.city||"")}"></div>
-      </div>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h3 style="margin-top:0">Entregas</h3>
-      <div class="row">
-        <div class="field"><label>Pedido mínimo</label><input id="s-min" type="number" value="${s.delivery?.minOrder||0}"></div>
-        <div class="field"><label>Tiempo prep. (min)</label><input id="s-prep" type="number" value="${s.delivery?.prepTimeMin||45}"></div>
-      </div>
-      <label style="display:flex;gap:8px;margin:6px 0"><input type="checkbox" id="s-del" ${s.delivery?.enabled?"checked":""}> Domicilio habilitado</label>
-      <label style="display:flex;gap:8px;margin:6px 0"><input type="checkbox" id="s-pick" ${s.delivery?.pickupEnabled?"checked":""}> Recoger habilitado</label>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <h3 style="margin-top:0">Banner</h3>
-      <div class="field"><label>Título</label><input id="s-bt" value="${escapeHtml(s.banner?.title||"")}"></div>
-      <div class="field"><label>Subtítulo</label><input id="s-bs" value="${escapeHtml(s.banner?.subtitle||"")}"></div>
-      <div class="field"><label>CTA</label><input id="s-bc" value="${escapeHtml(s.banner?.cta||"")}"></div>
-      <label style="display:flex;gap:8px"><input type="checkbox" id="s-ba" ${s.banner?.active?"checked":""}> Banner activo</label>
-    </div>
-    <button class="btn btn-accent btn-block" id="s-save" style="margin-top:14px">Guardar ajustes</button>`;
-  document.getElementById("s-save").onclick = async () => {
-    const patch = {
-      brand: {
-        name: document.getElementById("s-brand").value.trim(),
-        slogan: document.getElementById("s-slogan").value.trim(),
-        logoUrl: document.getElementById("s-logo").value.trim(),
-        colors: { primary: document.getElementById("s-c1").value, accent: document.getElementById("s-c2").value }
-      },
-      contact: {
-        whatsapp: document.getElementById("s-wa").value.trim(),
-        phone: document.getElementById("s-phone").value.trim(),
-        email: document.getElementById("s-email").value.trim()
-      },
-      address: {
-        street: document.getElementById("s-street").value.trim(),
-        city: document.getElementById("s-city").value.trim()
-      },
-      delivery: {
-        ...s.delivery,
-        minOrder: Number(document.getElementById("s-min").value),
-        prepTimeMin: Number(document.getElementById("s-prep").value),
-        enabled: document.getElementById("s-del").checked,
-        pickupEnabled: document.getElementById("s-pick").checked
-      },
-      banner: {
-        title: document.getElementById("s-bt").value.trim(),
-        subtitle: document.getElementById("s-bs").value.trim(),
-        cta: document.getElementById("s-bc").value.trim(),
-        active: document.getElementById("s-ba").checked
-      }
-    };
-    await saveSettings(patch);
-    await loadAll();
-    toast("Ajustes guardados", "ok");
-  };
-}
-
-// ─────────── Boot ───────────
-(async () => {
-  await loadAll();
-  render();
-})();
