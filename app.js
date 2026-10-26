@@ -1,5 +1,4 @@
-import { auth, db } from "./firebase.js";
-import { fetchSettings, fetchCategories, fetchZones, fetchActivePromos, fetchProductsPage, fetchAllActiveProducts, callCreateOrder, callMarkFlag } from "./api.js";
+import { fetchSettings, fetchCategories, fetchZones, fetchActivePromos, fetchProductsPage, fetchAllActiveProducts, callCreateOrder, callMarkFlag, fetchOrders } from "./api.js";
 import * as Cart from "./cart.js";
 import { fmtMoney, fmtDateTime, escapeHtml, unitPriceOf, lineTotalOf, fractionLabel, pctOff, maxUnitsFor, debounce, waLink, phoneDigits, WD_NAMES, uid as genId } from "./utils.js";
 import { GUEST_KEY } from "./config.js";
@@ -17,7 +16,6 @@ function modal(html, {onOpen}={}) {
 async function boot() {
   S.settings = await fetchSettings(); applyBrand();
   try { S.categories = await fetchCategories(); } catch(e){}
-  S.user = null; S.profile = null;
   Cart.subscribe(updateCartBadge);
   window.addEventListener("online", ()=>document.getElementById("offline-bar").hidden=true);
   window.addEventListener("offline", ()=>document.getElementById("offline-bar").hidden=false);
@@ -139,6 +137,7 @@ async function submitOrder(){
   if(CO.busy)return;CO.busy=true;const btn=document.getElementById("co-confirm");btn.disabled=true;btn.textContent="Procesando…";CO.idem=CO.idem||genId();const localTotal=coSummaryNumbers().total;
   try{
     const res=await callCreateOrder({idempotencyKey:CO.idem,customer:{name:CO.name,phone:CO.phone},delivery:{method:CO.method,when:CO.when,slotId:CO.slotId,zoneId:CO.zoneId,address:CO.address,references:CO.refs},payment:{method:"efectivo"},notes:CO.notes,items:Cart.snapshot().map(i=>({productId:i.productId,fraction:i.fraction,units:i.units,note:i.note}))});
+    localStorage.setItem(GUEST_KEY, JSON.stringify({ name: CO.name, phone: CO.phone, address: CO.address }));
     Cart.clearCart();CO.idem=null;sessionStorage.setItem("mf_last_order",JSON.stringify({...res,localTotal}));location.hash="#/exito";
   }catch(e){
     toast(e?.message||"Error procesando pedido.","err");btn.disabled=false;btn.textContent="Confirmar ✅";CO.busy=false;
@@ -147,11 +146,50 @@ async function submitOrder(){
 
 function viewSuccess(){
   let o;try{o=JSON.parse(sessionStorage.getItem("mf_last_order"))}catch(e){}
-  if(!o){$view.innerHTML=`<div class="empty"><div class="e">✅</div><h2>Pedido procesado (Modo Local)</h2><p>El backend de Firebase no está conectado aún, pero el flujo visual funciona correctamente.</p><a class="btn" href="#/inicio">Volver al inicio</a></div>`;return;}
-  $view.innerHTML=`<div class="card center" style="margin-top:20px"><div style="font-size:64px">✅</div><h2>Pedido creado</h2><p>Folio: <b>${escapeHtml(o.folio)}</b></p><a class="btn btn-block" href="#/inicio">Volver</a></div>`;
+  if(!o){$view.innerHTML=`<div class="empty"><div class="e">✅</div><h2>Pedido procesado</h2><p>No se encontró información del pedido.</p><a class="btn" href="#/inicio">Volver al inicio</a></div>`;return;}
+  $view.innerHTML=`<div class="card center" style="margin-top:20px"><div style="font-size:64px">✅</div><h2>Pedido creado</h2><p>Folio: <b>${escapeHtml(o.folio)}</b></p><p class="muted">Total: ${fmtMoney(o.total ?? o.localTotal ?? 0)}</p><a class="btn btn-block" href="#/pedidos" style="margin-top:12px">Ver mis pedidos</a><a class="btn btn-block btn-ghost" href="#/inicio" style="margin-top:8px">Volver al inicio</a></div>`;
 }
 
-function viewAccount(){ $view.innerHTML=`<div class="card center" style="max-width:400px;margin:40px auto"><h2>👤 Cuenta</h2><p class="muted">El sistema de autenticación requiere Firebase. Actualmente estás en modo local/invitado.</p><a class="btn" href="#/inicio">Volver al inicio</a></div>`; }
-function viewOrders(){ $view.innerHTML=`<div class="card center" style="max-width:400px;margin:40px auto"><h2>📦 Pedidos</h2><p class="muted">El historial requiere conexión a Firebase.</p><a class="btn" href="#/inicio">Volver al inicio</a></div>`; }
+async function viewAccount() {
+  const guest = JSON.parse(localStorage.getItem(GUEST_KEY) || "{}");
+  const orders = await fetchOrders({ phone: guest.phone || undefined });
+  $view.innerHTML = `
+    <div class="card" style="margin-top:10px">
+      <h2 style="margin-top:0">👤 Mi cuenta</h2>
+      <p class="muted">Modo invitado. Tus datos se guardan en este dispositivo.</p>
+      <div class="field"><label>Nombre</label><input id="g-name" value="${escapeHtml(guest.name||"")}"></div>
+      <div class="field"><label>Teléfono</label><input id="g-phone" value="${escapeHtml(guest.phone||"")}" type="tel"></div>
+      <div class="field"><label>Dirección</label><input id="g-addr" value="${escapeHtml(guest.address||"")}"></div>
+      <button class="btn btn-block" id="g-save">Guardar datos</button>
+      <a class="btn btn-block btn-ghost" href="#/pedidos" style="margin-top:8px">📦 Ver mis pedidos (${orders.length})</a>
+    </div>`;
+  document.getElementById("g-save").onclick = () => {
+    const data = {
+      name: document.getElementById("g-name").value.trim(),
+      phone: document.getElementById("g-phone").value.trim(),
+      address: document.getElementById("g-addr").value.trim()
+    };
+    localStorage.setItem(GUEST_KEY, JSON.stringify(data));
+    toast("Datos guardados", "ok");
+  };
+}
+
+async function viewOrders() {
+  const guest = JSON.parse(localStorage.getItem(GUEST_KEY) || "{}");
+  const phone = guest.phone;
+  const orders = phone ? await fetchOrders({ phone }) : await fetchOrders();
+  if (!orders.length) {
+    $view.innerHTML = `<div class="empty"><div class="e">📦</div><h2>Sin pedidos</h2><p class="muted">Cuando hagas un pedido aparecerá aquí.</p><a class="btn" href="#/catalogo">Ir al catálogo</a></div>`;
+    return;
+  }
+  const statusLabel = { creado:"Creado", confirmado:"Confirmado", preparando:"Preparando", en_entrega:"En camino", listo_recoger:"Listo", entregado:"Entregado", cancelado:"Cancelado" };
+  $view.innerHTML = `<h2>📦 Mis pedidos</h2>` + orders.map(o => `
+    <div class="order-card">
+      <div class="h"><b>${escapeHtml(o.folio)}</b><span class="status ${o.status}">${statusLabel[o.status]||o.status}</span></div>
+      <div class="muted" style="font-size:12px">${fmtDateTime(o.createdAt)} · ${o.delivery?.method==="domicilio"?"🚚 Domicilio":"🏪 Recoger"}</div>
+      <div style="margin:8px 0;font-size:14px">${(o.items||[]).map(it=>`· ${it.units} × ${escapeHtml(it.name)} — ${fmtMoney(it.lineTotal)}`).join("<br>")}</div>
+      <div style="display:flex;justify-content:space-between;font-weight:800;color:var(--brand-dark)"><span>Total</span><span>${fmtMoney(o.total)}</span></div>
+    </div>`).join("");
+}
 
 boot();

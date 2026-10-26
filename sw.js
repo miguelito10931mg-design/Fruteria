@@ -1,4 +1,4 @@
-const V="mf-v1",S_CACHE=`s-${V}`,A_CACHE=`a-${V}`,PRE=["./","./index.html","./offline.html","./styles.css","./app.js","./utils.js","./cart.js","./api.js","./config.js","./manifest.webmanifest","./icon.svg"];
+const V="mf-v2",S_CACHE=`s-${V}`,A_CACHE=`a-${V}`,PRE=["./","./index.html","./offline.html","./admin.html","./styles.css","./app.js","./admin.js","./utils.js","./cart.js","./api.js","./config.js","./manifest.webmanifest","./icon.svg"];
 self.addEventListener("install",e=>{e.waitUntil(caches.open(S_CACHE).then(c=>c.addAll(PRE)).then(()=>self.skipWaiting()))});
 self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>![S_CACHE,A_CACHE].includes(x)).map(x=>caches.delete(x)))).then(()=>self.clients.claim()))});
 self.addEventListener("message",e=>{if(e.data==="SKIP_WAITING")self.skipWaiting()});
