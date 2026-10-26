@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Mi Frutería</title>
+  <meta name="theme-color" content="#1E7A46">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="offline-bar" hidden>📶 Sin conexión</div>
+  <header class="topbar">
+    <a class="brand" href="#/inicio"><span class="brand-logo"><img src="icon.svg" alt=""></span><span class="brand-name" id="brand-name">Mi Frutería</span></a>
+    <form class="searchbox" id="search-form"><input id="search-input" type="search" placeholder="Buscar frutas, verduras…" aria-label="Buscar"><button type="submit">🔍</button></form>
+    <a class="cart-btn" href="#/carrito">🛒<span class="cart-count" id="cart-count" hidden>0</span></a>
+  </header>
+  <main id="view" tabindex="-1"></main>
+  <nav class="bottomnav">
+    <a href="#/inicio" data-nav="inicio"><span>🏠</span>Inicio</a>
+    <a href="#/catalogo" data-nav="catalogo"><span>🥦</span>Catálogo</a>
+    <a href="#/carrito" data-nav="carrito"><span>🛒</span>Carrito</a>
+    <a href="#/cuenta" data-nav="cuenta"><span>👤</span>Cuenta</a>
+  </nav>
+  <a id="wa-float" class="wa-float" href="#" target="_blank" rel="noopener" hidden>💬</a>
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <div id="modal-root"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
